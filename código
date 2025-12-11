@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cuadro de mando turístico</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0f172a; --card:#111827; --accent:#14b8a6; --text:#e5e7eb; --muted:#94a3b8;
+    }
+    body{margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto; background:var(--bg); color:var(--text);}
+    header{padding:24px; border-bottom:1px solid #1f2937;}
+    h1{margin:0 0 6px 0; font-weight:700; letter-spacing:.2px;}
+    .container{padding:24px; max-width:1100px; margin:0 auto;}
+    .row{display:flex; gap:16px; flex-wrap:wrap;}
+    .card{background:var(--card); border:1px solid #1f2937; border-radius:12px; padding:16px; flex:1; min-width:280px;}
+    .small{font-size:.92rem; color:var(--muted);}
+    .controls{display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:12px 0 4px 0;}
+    input[type="file"]{color:var(--text);}
+    select{background:#0b1220; color:var(--text); border:1px solid #1f2937; border-radius:8px; padding:8px;}
+    .kpi{display:flex; align-items:baseline; gap:10px;}
+    .kpi .value{font-size:1.8rem; font-weight:700; color:var(--accent);}
+    .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+    canvas{background:#0b1220; border:1px solid #1f2937; border-radius:12px; padding:8px;}
+    footer{padding:16px 24px; border-top:1px solid #1f2937; color:var(--muted); font-size:.9rem;}
+    .note{font-size:.8rem; color:var(--muted); margin-top:8px;}
+    .btn{background:var(--accent); color:#062e2b; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600;}
+    .btn:disabled{opacity:.6; cursor:not-allowed;}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cuadro de mando turístico</h1>
+    <p class="small">Indicadores clave: Visitas, Gasto medio (€), Satisfacción (%). Carga un CSV con columnas exactas: Fecha, Segmento, Visitas, GastoMedio, Satisfaccion.</p>
+  </header>
+
+  <div class="container">
+    <div class="controls">
+      <input type="file" id="fileInput" accept=".csv" />
+      <label for="segmentFilter">Segmento:</label>
+      <select id="segmentFilter" disabled>
+        <option value="__ALL__">Todos</option>
+      </select>
+      <button id="resetBtn" class="btn" disabled>Restablecer</button>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <div class="kpi">
+          <span class="small">Visitas totales</span>
+          <span id="kpiVisitas" class="value">—</span>
+        </div>
+        <div class="note">Suma de la columna Visitas tras aplicar filtro.</div>
+      </div>
+      <div class="card">
+        <div class="kpi">
+          <span class="small">Gasto medio (€)</span>
+          <span id="kpiGasto" class="value">—</span>
+        </div>
+        <div class="note">Promedio ponderado: Σ(Visitas × GastoMedio) / Σ(Visitas).</div>
+      </div>
+      <div class="card">
+        <div class="kpi">
+          <span class="small">Satisfacción (%)</span>
+          <span id="kpiSatis" class="value">—</span>
+        </div>
+        <div class="note">Promedio simple de Satisfaccion (%).</div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:16px;">
+      <div class="card">
+        <h3 style="margin-top:0;">Tendencia temporal</h3>
+        <canvas id="lineChart" height="160"></canvas>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0;">Comparación por segmento</h3>
+        <canvas id="barChart" height="160"></canvas>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h3 style="margin-top:0;">Conclusiones</h3>
+      <ul>
+        <li><strong>Hallazgo:</strong> Tras el filtro, identifica el segmento con mayor contribución al gasto.</li>
+        <li><strong>Decisión:</strong> Priorizar acciones en el segmento líder e investigar variaciones de satisfacción.</li>
+      </ul>
+      <p class="note">
+        Formateo: Visitas (entero), Gasto (€) con dos decimales, Satisfacción (%) con un decimal.
+        Fórmulas: Gasto medio = Σ(Visitas × GastoMedio) / Σ(Visitas).
+      </p>
+    </div>
+  </div>
+
+  <footer>
+    © Cuadro de mando turístico — Funciona sin servidor. Abre este archivo con doble clic y carga tu CSV local.
+  </footer>
+
+  <!-- Chart.js para los gráficos (P2). Si prefieres no usar librerías, podemos cambiarlos por SVG simples. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+    let rawData = [];
+    let filtered = [];
+    let lineChart, barChart;
+
+    const fmtInt = (n)=> Intl.NumberFormat('es-ES').format(Math.round(n));
+    const fmtEUR = (n)=> new Intl.NumberFormat('es-ES',{style:'currency',currency:'EUR',minimumFractionDigits:2,maximumFractionDigits:2}).format(n);
+    const fmtPct = (n)=> `${n.toFixed(1)}%`;
+
+    document.getElementById('fileInput').addEventListener('change', handleFile);
+    document.getElementById('segmentFilter').addEventListener('change', applyFilter);
+    document.getElementById('resetBtn').addEventListener('click', ()=>{
+      document.getElementById('segmentFilter').value = '__ALL__';
+      applyFilter();
+    });
+
+    function handleFile(evt){
+      const file = evt.target.files[0];
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = (e)=> {
+        const text = e.target.result;
+        rawData = parseCSV(text);
+        // Normalización simple
+        rawData = rawData.map(r=>({
+          Fecha: r.Fecha,
+          Segmento: r.Segmento,
+          Visitas: Number(r.Visitas || 0),
+          GastoMedio: Number(r.GastoMedio || 0),
+          Satisfaccion: Number(r.Satisfaccion || 0)
+        }));
+        initFilterOptions(rawData);
+        document.getElementById('segmentFilter').disabled = false;
+        document.getElementById('resetBtn').disabled = false;
+        filtered = [...rawData];
+        updateKPIs();
+        renderCharts();
+      };
+      reader.readAsText(file, 'UTF-8');
+    }
+
+    function parseCSV(text){
+      const lines = text.trim().split(/\r?\n/);
+      const headers = lines[0].split(',').map(h=>h.trim());
+      return lines.slice(1).map(line=>{
+        const cells = line.split(',').map(c=>c.trim());
+        const obj = {};
+        headers.forEach((h,i)=> obj[h] = cells[i]);
+        return obj;
+      });
+    }
+
+    function initFilterOptions(data){
+      const sel = document.getElementById('segmentFilter');
+      sel.innerHTML = '<option value="__ALL__">Todos</option>';
+      const segs = Array.from(new Set(data.map(d=>d.Segmento))).sort();
+      segs.forEach(s=>{
+        const opt = document.createElement('option');
+        opt.value = s; opt.textContent = s;
+        sel.appendChild(opt);
+      });
+    }
+
+    function applyFilter(){
+      const seg = document.getElementById('segmentFilter').value;
+      filtered = (seg === '__ALL__') ? [...rawData] : rawData.filter(d=> d.Segmento === seg);
+      updateKPIs();
+      renderCharts();
+    }
+
+    function updateKPIs(){
+      const visitas = filtered.reduce((a,b)=> a + b.Visitas, 0);
+      const gastoNumerador = filtered.reduce((a,b)=> a + (b.Visitas * b.GastoMedio), 0);
+      const gastoDenominador = visitas || 1;
+      const gastoMedio = gastoNumerador / gastoDenominador;
+      const satis = filtered.length ? (filtered.reduce((a,b)=> a + b.Satisfaccion, 0) / filtered.length) : 0;
+
+      document.getElementById('kpiVisitas').textContent = fmtInt(visitas);
+      document.getElementById('kpiGasto').textContent = fmtEUR(gastoMedio);
+      document.getElementById('kpiSatis').textContent = fmtPct(satis);
+    }
+
+    function renderCharts(){
+      const byDate = aggregateByDate(filtered);
+      const labels = byDate.map(d=> d.Fecha);
+      const visitasSerie = byDate.map(d=> d.Visitas);
+
+      // Line chart (tendencia temporal)
+      const lineCtx = document.getElementById('lineChart').getContext('2d');
+      if(lineChart) lineChart.destroy();
+      lineChart = new Chart(lineCtx, {
+        type:'line',
+        data:{
+          labels,
+          datasets:[{
+            label:'Visitas',
+            data: visitasSerie,
+            borderColor: '#14b8a6',
+            backgroundColor: 'rgba(20,184,166,.15)',
+            tension:.25
+          }]
+        },
+        options:{
+          plugins:{legend:{display:false}},
+          scales:{
+            x:{ticks:{color:'#94a3b8'}},
+            y:{ticks:{color:'#94a3b8'}, grid:{color:'#1f2937'}}
+          }
+        }
+      });
+
+      // Bar chart (comparación por segmento)
+      const bySeg = aggregateBySegment(filtered);
+      const segLabels = bySeg.map(d=> d.Segmento);
+      const segVisitas = bySeg.map(d=> d.Visitas);
+      const barCtx = document.getElementById('barChart').getContext('2d');
+      if(barChart) barChart.destroy();
+      barChart = new Chart(barCtx, {
+        type:'bar',
+        data:{
+          labels: segLabels,
+          datasets:[{
+            label:'Visitas',
+            data: segVisitas,
+            backgroundColor: '#14b8a6'
+          }]
+        },
+        options:{
+          plugins:{legend:{display:false}},
+          scales:{
+            x:{ticks:{color:'#94a3b8'}},
+            y:{ticks:{color:'#94a3b8'}, grid:{color:'#1f2937'}}
+          }
+        }
+      });
+    }
+
+    function aggregateByDate(data){
+      const map = new Map();
+      data.forEach(d=>{
+        const key = d.Fecha;
+        if(!map.has(key)) map.set(key, {Fecha:key, Visitas:0});
+        map.get(key).Visitas += d.Visitas;
+      });
+      return Array.from(map.values()).sort((a,b)=> new Date(a.Fecha) - new Date(b.Fecha));
+    }
+
+    function aggregateBySegment(data){
+      const map = new Map();
+      data.forEach(d=>{
+        const key = d.Segmento;
+        if(!map.has(key)) map.set(key, {Segmento:key, Visitas:0});
+        map.get(key).Visitas += d.Visitas;
+      });
+      return Array.from(map.values()).sort((a,b)=> a.Segmento.localeCompare(b.Segmento));
+    }
+  </script>
+</body>
+</html>
